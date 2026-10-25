@@ -1,0 +1,41 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ghostkey-controller
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+rules:
+  # Pod watching for controller
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Secret management for SecretReconciler
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # Namespace reading for webhook enablement inheritance
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get", "list", "watch"]
+  # Workload reading for webhook enablement inheritance (pod -> owner chain)
+  - apiGroups: ["apps"]
+    resources: ["replicasets", "deployments", "daemonsets", "statefulsets"]
+    verbs: ["get", "list", "watch"]
+  # Service reading for trusted DNS server auto-discovery (kube-dns)
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
+  {{- if eq (.Values.controller.ebpf.hostResolution | default "dns-snoop") "virtual-ip" }}
+  # Address ranges the virtual IP range must not overlap: node pod CIDRs
+  # and addresses, and the service CIDRs
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["servicecidrs"]
+    verbs: ["list"]
+  {{- end }}
+  # Events for debugging
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["create", "patch"]

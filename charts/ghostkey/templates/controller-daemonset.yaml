@@ -1,0 +1,160 @@
+{{- /* NRI is only used in virtual-ip mode. */}}
+{{- $nri := and .Values.controller.nri.enabled (eq (.Values.controller.ebpf.hostResolution | default "dns-snoop") "virtual-ip") }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: ghostkey-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: controller
+spec:
+  selector:
+    matchLabels:
+      {{- include "ghostkey.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: controller
+  template:
+    metadata:
+      labels:
+        {{- include "ghostkey.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: controller
+    spec:
+      serviceAccountName: ghostkey-controller
+      hostPID: true
+      # 60s gives the controller-runtime manager time to finish its shutdown
+      # path (uprobe detach, BPF program close) on SIGTERM, so Go's coverage
+      # runtime can flush covcounters before kubelet SIGKILLs the pod. The
+      # default 30s was racing the cleanup and producing covmeta-only
+      # artifacts in CI.
+      terminationGracePeriodSeconds: 60
+      initContainers:
+        - name: mount-tracefs
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["sh", "-c", "mount -t tracefs tracefs /sys/kernel/tracing 2>/dev/null || true"]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: tracefs
+              mountPath: /sys/kernel/tracing
+              mountPropagation: Bidirectional
+      containers:
+        - name: controller
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/ghostkey", "controller"]
+          args:
+            - --enable-ebpf={{ .Values.controller.ebpf.enabled }}
+            - --cgroup-path={{ .Values.controller.cgroupPath }}
+            - --egress-interface={{ .Values.controller.ebpf.egressInterface | default "auto" }}
+            - --tc-attach-mode={{ .Values.controller.ebpf.tcAttachMode | default "auto" }}
+            - --secret-binding={{ .Values.controller.ebpf.secretBinding | default "enforce" }}
+            - --sni-check={{ .Values.controller.ebpf.sniCheck | default "enforce" }}
+            - --host-resolution={{ .Values.controller.ebpf.hostResolution | default "dns-snoop" }}
+            {{- if .Values.controller.ebpf.virtualIPRange }}
+            - --virtual-ip-range={{ .Values.controller.ebpf.virtualIPRange }}
+            {{- end }}
+            {{- if .Values.controller.dns.trustedServers }}
+            - --trusted-dns-servers={{ join "," .Values.controller.dns.trustedServers }}
+            {{- end }}
+            - --nri-socket={{ if $nri }}{{ .Values.controller.nri.socketPath }}{{ end }}
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: GHOSTKEY_LOG_LEVEL
+              value: {{ .Values.log.level | quote }}
+            - name: GHOSTKEY_LOG_DEV
+              value: {{ .Values.log.dev | quote }}
+            - name: GHOSTKEY_BPF_LOG_LEVEL
+              value: {{ .Values.log.ebpfLevel | default "" | quote }}
+            {{- if .Values.coverage.enabled }}
+            - name: GOCOVERDIR
+              value: /coverage
+            {{- end }}
+          ports:
+            - name: health
+              containerPort: 8081
+          volumeMounts:
+            - name: cgroup
+              mountPath: /host/sys/fs/cgroup
+              readOnly: false
+            - name: bpf
+              mountPath: /sys/fs/bpf
+              readOnly: false
+            - name: btf
+              mountPath: /sys/kernel/btf
+              readOnly: true
+            - name: tracefs
+              mountPath: /sys/kernel/tracing
+              mountPropagation: Bidirectional
+            {{- if $nri }}
+            - name: nri
+              mountPath: {{ dir .Values.controller.nri.socketPath }}
+            {{- end }}
+            {{- if .Values.coverage.enabled }}
+            - name: coverage
+              mountPath: /coverage
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.controller.resources | nindent 12 }}
+          securityContext:
+            privileged: true
+            runAsUser: 0
+            runAsGroup: 0
+            appArmorProfile:
+              type: Unconfined
+            capabilities:
+              add:
+                - BPF
+                - NET_ADMIN
+                - SYS_ADMIN
+                - SYS_RESOURCE
+      volumes:
+        - name: cgroup
+          hostPath:
+            path: /sys/fs/cgroup
+            type: Directory
+        - name: bpf
+          hostPath:
+            path: /sys/fs/bpf
+            type: DirectoryOrCreate
+        - name: btf
+          hostPath:
+            path: /sys/kernel/btf
+            type: Directory
+        - name: tracefs
+          hostPath:
+            path: /sys/kernel/tracing
+            type: DirectoryOrCreate
+        {{- if $nri }}
+        # The directory, not the socket: the runtime may create or recreate
+        # the socket after the controller starts.
+        - name: nri
+          hostPath:
+            path: {{ dir .Values.controller.nri.socketPath }}
+            type: DirectoryOrCreate
+        {{- end }}
+        {{- if .Values.coverage.enabled }}
+        - name: coverage
+          hostPath:
+            path: {{ .Values.coverage.hostPath }}
+            type: DirectoryOrCreate
+        {{- end }}

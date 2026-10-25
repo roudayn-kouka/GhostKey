@@ -1,0 +1,18 @@
+{{- if eq .Values.certificates.mode "certManager" }}
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ghostkey-webhook-cert
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+spec:
+  secretName: ghostkey-webhook-certs
+  issuerRef:
+    name: {{ .Values.certificates.certManager.issuerRef.name }}
+    kind: {{ .Values.certificates.certManager.issuerRef.kind }}
+  dnsNames:
+    - ghostkey-webhook
+    - ghostkey-webhook.{{ .Release.Namespace }}
+    - ghostkey-webhook.{{ .Release.Namespace }}.svc
+{{- end }}

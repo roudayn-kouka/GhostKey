@@ -1,0 +1,172 @@
+# Install:
+#   helm install ghostkey ./charts/ghostkey -n ghostkey-system --create-namespace
+# With demo: helm install ghostkey ./charts/ghostkey -n ghostkey-system --create-namespace --set demo.enabled=true
+
+image:
+  repository: ghcr.io/roudayna/ghostkey
+  tag: dev
+  pullPolicy: IfNotPresent
+
+log:
+  # Log level: trace, debug, info, warn, error
+  # trace: very verbose (per-secret sync, BPF debug counters)
+  # debug: per-process attach, exec events, retry details
+  level: info
+  # Development mode: human-readable console output with colors
+  dev: false
+  # Verifier-log level for BPF program loads. Empty / disabled keeps the
+  # 1 MB-per-program log buffer from being allocated proactively at startup
+  # (cilium/ebpf still retries with branch logging on verifier failure, so
+  # diagnostics remain available on the only path that needs them). Setting
+  # this to "branch" / "instruction" / "stats" — or a comma-separated
+  # combination — opts into proactive logging during program load. Useful
+  # for offline complexity analysis; not recommended in production.
+  ebpfLevel: ""
+
+controller:
+  ebpf:
+    enabled: true
+    # Container interface whose host-side veth peer gets the tc patch
+    # program (tc ingress on the host veth — keeps rewritten ciphertext
+    # out of reach of in-pod packet capture). "auto" (default) reads
+    # /proc/net/route inside the netns and picks the interface backing
+    # the default IPv4 route — works for the standard CNI "eth0"
+    # convention AND for host-mode netns where the default route exits
+    # via a non-standard name. Pin to a specific name (e.g. "eth0",
+    # "wlp3s0", "enp0s3") to override. Use "none" or "lo-only" to disable
+    # external attachment. Loopback is never patched: same-pod traffic
+    # always receives the placeholder.
+    egressInterface: auto
+    # How the tc patch program is attached. "auto" uses TCX on Linux 6.6+
+    # and falls back to a clsact qdisc + cls_bpf filter on older kernels
+    # (5.17+). "tcx" requires TCX; "clsact" always uses the classic filter.
+    tcAttachMode: auto
+    # Which pods may redeem a secret's placeholder. A pod can only use the
+    # secrets it references in its spec (Secret volume, env secretKeyRef,
+    # envFrom secretRef); a placeholder sent by any other pod goes out
+    # unchanged. "enforce" (default) refuses such rewrites. "audit" lets
+    # them through but logs each violation in the controller, to find
+    # workloads that use secrets they don't mount before enforcing.
+    secretBinding: enforce
+    # A secret restricted to a hostname (ghostkey.io/hosts) is only
+    # rewritten on a connection whose TLS ClientHello names that host
+    # (SNI), case-insensitively and exactly: a client that connects to a
+    # short in-cluster name ("my-svc") does not match an annotation with
+    # the full name ("my-svc.ns.svc.cluster.local"). "enforce" (default)
+    # refuses other rewrites: the placeholder goes out unchanged. "audit"
+    # lets them through but logs each one in the controller.
+    sniCheck: enforce
+    # How the data plane works out which host a connection goes to, for
+    # secrets restricted to a hostname. "dns-snoop" (default) reads DNS
+    # answers as pods receive them. "virtual-ip" is experimental
+    #: every such host gets a stable fake IP
+    # from virtualIPRange, and a fake IPv6. A ghostkey pod with a secret
+    # restricted to the host gets them in place of the host's addresses in
+    # DNS answers (A and AAAA records), and its connects to them are
+    # redirected to one of those addresses. A secret
+    # restricted to the host is only rewritten on a connection made to its
+    # fake IP (an app that connects to a hardcoded address, or resolves
+    # outside the pod's DNS, gets none). While the controller is not running,
+    # connects to fake IPs fail. The fake IPs and their addresses are kept in BPF maps
+    # pinned under /sys/fs/bpf/ghostkey so restarts keep them; the pins stay on
+    # the node after an uninstall until it reboots.
+    hostResolution: dns-snoop
+    # Ranges the fake IPs come from in virtual-ip mode: an IPv4 range (/19
+    # or larger) and optionally an IPv6 one (/115 or larger),
+    # comma-separated (escape the comma as "\," with helm --set). Without
+    # an IPv6 range, AAAA answers are left unchanged, and an app that
+    # connects over IPv6 gets no host-restricted secret. The defaults are
+    # reserved for benchmarking (RFC 2544, RFC 5180) and never routed. The
+    # controller refuses to start if a range overlaps a node address, a pod
+    # or service CIDR, or a route of the node.
+    virtualIPRange: 198.18.0.0/15,2001:2::/48
+  cgroupPath: /host/sys/fs/cgroup
+  # NRI (Node Resource Interface) hook into the container runtime, used in
+  # virtual-ip mode: containerd 2.0+ and CRI-O 1.30+ serve it by default.
+  # The runtime then waits for ghostkey to attach the DNS rewrite while it
+  # creates each pod sandbox, so no container of a ghostkey pod resolves a
+  # name before it. Without NRI (disabled here or in the runtime), the
+  # controller attaches the rewrite by polling pending pods, which leaves a
+  # short window at pod start: a lookup made in it gets the real addresses,
+  # and a connection made with them gets no host-restricted secret until the
+  # app resolves the name again. The controller logs which way each node
+  # runs. The socket's directory is mounted from the host.
+  nri:
+    enabled: true
+    socketPath: /var/run/nri/nri.sock
+  dns:
+    # Trusted DNS server IPs. Only DNS responses from these servers are used
+    # for host-based secret filtering. If empty, auto-discovers kube-dns ClusterIP.
+    trustedServers: []
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+webhook:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 128Mi
+
+certificates:
+  mode: auto  # auto | certManager | provided
+  provided:
+    secretName: ghostkey-webhook-certs
+    certKey: tls.crt
+    keyKey: tls.key
+  certManager:
+    issuerRef:
+      name: ghostkey-selfsigned
+      kind: Issuer
+
+# Go coverage collection for images built with COVER=1 (CI e2e only). The
+# controller and webhook both write covdata to this host directory.
+coverage:
+  enabled: false
+  hostPath: /tmp/ghostkey-coverage
+
+# Optional demo app deployment for validating ghostkey is working.
+# Enable with: helm install ghostkey ghostkey/ghostkey -n ghostkey-system --create-namespace --set demo.enabled=true
+#
+# Deploys a Go app that sends two secrets to httpbin.org as headers.
+# DNS host filtering (via kube-dns, auto-discovered) verifies that
+# secrets are only rewritten for their allowed hosts:
+#   - "allowed" secret (hosts: httpbin.org) → real value in response
+#   - "blocked" secret (hosts: example.com) → shadow UUID in response
+demo:
+  enabled: false
+  # Namespace for the demo app. Created automatically with the
+  # ghostkey.io/enabled label so the webhook intercepts pods in it.
+  namespace: ghostkey-demo
+  image:
+    repository: ghcr.io/roudayna/ghostkey-demo-go
+    # Empty tag defaults to chart appVersion.
+    tag: ""
+    pullPolicy: IfNotPresent
+  # Target URL that the demo app sends requests to (must be HTTPS).
+  targetURL: "https://httpbin.org/headers"
+  # Interval in seconds between requests.
+  requestInterval: "5"
+  # Allowed secret: host matches targetURL → ghostkey rewrites with real value.
+  secretAllowed:
+    value: "real-api-key-allowed-12345"
+    allowedHost: "httpbin.org"
+  # Blocked secret: host does NOT match targetURL → shadow UUID passes through.
+  secretBlocked:
+    value: "real-api-key-blocked-67890"
+    allowedHost: "example.com"
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi

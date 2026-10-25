@@ -1,0 +1,130 @@
+{{- /* Resolve cert data for auto mode — generate once, use for both Secret and caBundle */ -}}
+{{- $caBundle := "" }}
+{{- $certPEM := "" }}
+{{- $keyPEM := "" }}
+{{- if eq .Values.certificates.mode "auto" }}
+  {{- $secretName := "ghostkey-webhook-certs" }}
+  {{- $existing := lookup "v1" "Secret" .Release.Namespace $secretName }}
+  {{- if and $existing $existing.data (index $existing.data "tls.crt") (index $existing.data "tls.key") }}
+    {{- $certPEM = index $existing.data "tls.crt" }}
+    {{- $keyPEM = index $existing.data "tls.key" }}
+  {{- else }}
+    {{- $cn := printf "ghostkey-webhook.%s.svc" .Release.Namespace }}
+    {{- $dnsNames := list "ghostkey-webhook" (printf "ghostkey-webhook.%s" .Release.Namespace) (printf "ghostkey-webhook.%s.svc" .Release.Namespace) }}
+    {{- $generated := genSelfSignedCert $cn nil $dnsNames 3650 }}
+    {{- $certPEM = $generated.Cert | b64enc }}
+    {{- $keyPEM = $generated.Key | b64enc }}
+  {{- end }}
+  {{- $caBundle = $certPEM }}
+{{- end }}
+{{- /* --- Secret (auto mode only) --- */ -}}
+{{- if eq .Values.certificates.mode "auto" }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: ghostkey-webhook-certs
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+type: kubernetes.io/tls
+data:
+  tls.crt: {{ $certPEM }}
+  tls.key: {{ $keyPEM }}
+{{- end }}
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: ghostkey-mutating-webhook
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+  {{- if eq .Values.certificates.mode "certManager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/ghostkey-webhook-cert
+  {{- end }}
+webhooks:
+  - name: ns.pod.mutate.ghostkey.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: ghostkey-webhook
+        path: /mutate-pods
+      {{- if $caBundle }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    namespaceSelector:
+      matchExpressions:
+        - key: ghostkey.io/enabled
+          operator: In
+          values:
+            - "true"
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - {{ .Release.Namespace }}
+    failurePolicy: Fail
+  - name: pod.mutate.ghostkey.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: ghostkey-webhook
+        path: /mutate-pods
+      {{- if $caBundle }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+    rules:
+      - operations: ["CREATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["pods"]
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - {{ .Release.Namespace }}
+    objectSelector:
+      matchLabels:
+        ghostkey.io/enabled: "true"
+    failurePolicy: Fail
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: ghostkey-validating-webhook
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+  {{- if eq .Values.certificates.mode "certManager" }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/ghostkey-webhook-cert
+  {{- end }}
+webhooks:
+  - name: secret.validate.ghostkey.io
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    clientConfig:
+      service:
+        namespace: {{ .Release.Namespace }}
+        name: ghostkey-webhook
+        path: /validate-secrets
+      {{- if $caBundle }}
+      caBundle: {{ $caBundle }}
+      {{- end }}
+    rules:
+      - operations: ["CREATE", "UPDATE"]
+        apiGroups: [""]
+        apiVersions: ["v1"]
+        resources: ["secrets"]
+    objectSelector:
+      matchLabels:
+        ghostkey.io/enabled: "true"
+    failurePolicy: Fail

@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghostkey-webhook
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: webhook
+spec:
+  replicas: {{ .Values.webhook.replicas }}
+  selector:
+    matchLabels:
+      {{- include "ghostkey.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: webhook
+  template:
+    metadata:
+      labels:
+        {{- include "ghostkey.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: webhook
+    spec:
+      serviceAccountName: ghostkey-controller
+      {{- if .Values.coverage.enabled }}
+      initContainers:
+        # The kubelet (or the root controller pod) creates the coverage
+        # hostPath as root with mode 0755, but the webhook runs as the image's
+        # non-root user. Open the directory up so it can write covcounters.
+        - name: coverage-dir
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["chmod", "1777", "/coverage"]
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - name: coverage
+              mountPath: /coverage
+      {{- end }}
+      containers:
+        - name: webhook
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/ghostkey", "webhook"]
+          args:
+            - --cert-dir=/certs
+          env:
+            - name: GHOSTKEY_LOG_LEVEL
+              value: {{ .Values.log.level | quote }}
+            - name: GHOSTKEY_LOG_DEV
+              value: {{ .Values.log.dev | quote }}
+            {{- if .Values.coverage.enabled }}
+            - name: GOCOVERDIR
+              value: /coverage
+            {{- end }}
+          ports:
+            - name: webhook
+              containerPort: 9443
+            - name: health
+              containerPort: 8081
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /certs
+              readOnly: true
+            {{- if .Values.coverage.enabled }}
+            - name: coverage
+              mountPath: /coverage
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.webhook.resources | nindent 12 }}
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: {{ include "ghostkey.certSecretName" . }}
+            {{- if eq .Values.certificates.mode "provided" }}
+            items:
+              - key: {{ .Values.certificates.provided.certKey }}
+                path: tls.crt
+              - key: {{ .Values.certificates.provided.keyKey }}
+                path: tls.key
+            {{- end }}
+        {{- if .Values.coverage.enabled }}
+        - name: coverage
+          hostPath:
+            path: {{ .Values.coverage.hostPath }}
+            type: DirectoryOrCreate
+        {{- end }}

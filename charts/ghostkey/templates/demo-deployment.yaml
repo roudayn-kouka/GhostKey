@@ -1,0 +1,52 @@
+{{- if .Values.demo.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ghostkey.fullname" . }}-demo
+  namespace: {{ .Values.demo.namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ghostkey.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: demo
+  template:
+    metadata:
+      labels:
+        {{- include "ghostkey.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: demo
+        ghostkey.io/enabled: "true"
+    spec:
+      containers:
+        - name: demo
+          image: "{{ .Values.demo.image.repository }}:{{ .Values.demo.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.demo.image.pullPolicy }}
+          env:
+            - name: SECRET_ALLOWED_FILE
+              value: "/etc/secrets/allowed/api-key"
+            - name: SECRET_BLOCKED_FILE
+              value: "/etc/secrets/blocked/api-key"
+            - name: TARGET_URL
+              value: {{ .Values.demo.targetURL | quote }}
+            - name: REQUEST_INTERVAL
+              value: {{ .Values.demo.requestInterval | quote }}
+          volumeMounts:
+            - name: secret-allowed
+              mountPath: "/etc/secrets/allowed"
+              readOnly: true
+            - name: secret-blocked
+              mountPath: "/etc/secrets/blocked"
+              readOnly: true
+          resources:
+            {{- toYaml .Values.demo.resources | nindent 12 }}
+      volumes:
+        - name: secret-allowed
+          secret:
+            secretName: {{ include "ghostkey.fullname" . }}-demo-allowed
+        - name: secret-blocked
+          secret:
+            secretName: {{ include "ghostkey.fullname" . }}-demo-blocked
+{{- end }}
