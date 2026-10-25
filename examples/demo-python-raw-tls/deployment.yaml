@@ -1,0 +1,71 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: tls
+  labels:
+    app: tls
+spec:
+  selector:
+    app: demo-python-raw-tls
+  ports:
+    - port: 8443
+      targetPort: 8443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-python-raw-tls
+  labels:
+    app: demo-python-raw-tls
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-python-raw-tls
+  template:
+    metadata:
+      labels:
+        app: demo-python-raw-tls
+      annotations:
+        ghostkey.io/enabled: "true"
+    spec:
+      containers:
+        - name: demo-app
+          image: ghostkey-demo-python-raw-tls:latest
+          imagePullPolicy: Never
+          command: ["python", "-u", "app.py"]
+          env:
+            - name: SECRET_ALLOWED_FILE
+              value: "/etc/secrets/allowed/api-key"
+            - name: SECRET_BLOCKED_FILE
+              value: "/etc/secrets/blocked/api-key"
+            # Full Service name, not "tls": ghostkey only rewrites a secret on a
+            # connection whose TLS SNI is the secret's ghostkey.io/hosts value.
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: TARGET_HOST
+              value: "tls.$(POD_NAMESPACE).svc.cluster.local"
+            - name: REQUEST_INTERVAL
+              value: "5"
+          volumeMounts:
+            - name: secret-allowed-vol
+              mountPath: "/etc/secrets/allowed"
+              readOnly: true
+            - name: secret-blocked-vol
+              mountPath: "/etc/secrets/blocked"
+              readOnly: true
+        - name: echo-server
+          image: ghostkey-demo-python-raw-tls:latest
+          imagePullPolicy: Never
+          command: ["python", "-u", "echo_server.py"]
+          ports:
+            - containerPort: 8443
+      volumes:
+        - name: secret-allowed-vol
+          secret:
+            secretName: secret-allowed
+        - name: secret-blocked-vol
+          secret:
+            secretName: secret-blocked

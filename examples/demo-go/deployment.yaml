@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-go
+  labels:
+    app: demo-go
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-go
+  template:
+    metadata:
+      labels:
+        app: demo-go
+      annotations:
+        ghostkey.io/enabled: "true"
+    spec:
+      containers:
+        - name: demo-app
+          image: ghostkey-demo-go:latest
+          imagePullPolicy: Never
+          # demo-go uses env-var injection via secretKeyRef so the
+          # full path is covered end-to-end:
+          #   1. webhook rewrites secretKeyRef.name → <name>-ghostkey
+          #   2. container starts with the shadow placeholder in env
+          #   3. demo sends it as an HTTP header
+          #   4. eBPF rewrites the placeholder → real value on the wire
+          # demo-python / demo-js continue to use the volume-mount path
+          # so both injection models stay covered by the e2e suite.
+          env:
+            - name: SECRET_ALLOWED
+              valueFrom:
+                secretKeyRef:
+                  name: secret-allowed
+                  key: api-key
+            - name: SECRET_BLOCKED
+              valueFrom:
+                secretKeyRef:
+                  name: secret-blocked
+                  key: api-key
+            - name: TARGET_URL
+              value: "https://httpbin.org/headers"
+            - name: REQUEST_INTERVAL
+              value: "5"
