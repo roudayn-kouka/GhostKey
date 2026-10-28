@@ -1,0 +1,261 @@
+package cgroups
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"sort"
+	"strings"
+	"testing"
+)
+
+// mkdirAll creates the directory tree, failing the test on error.
+func mkdirAll(t *testing.T, paths ...string) {
+	t.Helper()
+	for _, p := range paths {
+		if err := os.MkdirAll(p, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", p, err)
+		}
+	}
+}
+
+func TestFindContainerCgroupPath_DefaultsToStandardRoot(t *testing.T) {
+	// We can't actually exercise DefaultCgroupRoot on a non-Linux test runner,
+	// but we can verify FindContainerCgroupPath returns an error rather than
+	// panicking when an empty cgroupRoot is passed (it falls back to
+	// DefaultCgroupRoot which won't contain our fake container).
+	got, err := FindContainerCgroupPath("", "ffffffff-ffff-ffff-ffff-ffffffffffff", "no-such-container")
+	if err == nil {
+		t.Fatalf("expected error for unknown container, got %q", got)
+	}
+}
+
+func TestFindContainerCgroupPath_ContainerdSystemdLayouts(t *testing.T) {
+	const podUID = "abcd1234-5678-9abc-def0-fedcba987654"
+	const containerID = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	podUnderscored := strings.ReplaceAll(podUID, "-", "_")
+
+	for _, qos := range []string{"burstable", "besteffort", "guaranteed"} {
+		t.Run(qos, func(t *testing.T) {
+			root := t.TempDir()
+
+			qosSlice := "kubepods-" + qos + ".slice"
+			podSlice := "kubepods-" + qos + "-pod" + podUnderscored + ".slice"
+			containerScope := "cri-containerd-" + containerID + ".scope"
+			full := filepath.Join(root, "kubepods.slice", qosSlice, podSlice, containerScope)
+			mkdirAll(t, full)
+
+			got, err := FindContainerCgroupPath(root, podUID, containerID)
+			if err != nil {
+				t.Fatalf("FindContainerCgroupPath: %v", err)
+			}
+			if got != full {
+				t.Errorf("got  %q\nwant %q", got, full)
+			}
+		})
+	}
+}
+
+func TestFindContainerCgroupPath_CgroupfsLayout(t *testing.T) {
+	// k3s default driver uses /kubepods/<qos>/pod<UID>/<CID> with raw UID (no
+	// underscores) and no .scope suffix.
+	const podUID = "abcd1234-5678-9abc-def0-fedcba987654"
+	const containerID = "deadbeefdeadbeef"
+
+	for _, qos := range []string{"burstable", "besteffort", "guaranteed"} {
+		t.Run(qos, func(t *testing.T) {
+			root := t.TempDir()
+			full := filepath.Join(root, "kubepods", qos, "pod"+podUID, containerID)
+			mkdirAll(t, full)
+
+			got, err := FindContainerCgroupPath(root, podUID, containerID)
+			if err != nil {
+				t.Fatalf("FindContainerCgroupPath: %v", err)
+			}
+			if got != full {
+				t.Errorf("got  %q\nwant %q", got, full)
+			}
+		})
+	}
+}
+
+func TestFindContainerCgroupPath_CgroupfsGuaranteedDirect(t *testing.T) {
+	// Talos / kubeadm cgroupfs: Guaranteed QoS pods are placed directly under
+	// kubepods/pod<UID>/<containerID> with no QoS subdirectory.
+	const podUID = "abcd1234-5678-9abc-def0-fedcba987654"
+	const containerID = "deadbeefdeadbeefdeadbeefdeadbeef"
+
+	root := t.TempDir()
+	full := filepath.Join(root, "kubepods", "pod"+podUID, containerID)
+	mkdirAll(t, full)
+
+	got, err := FindContainerCgroupPath(root, podUID, containerID)
+	if err != nil {
+		t.Fatalf("FindContainerCgroupPath: %v", err)
+	}
+	if got != full {
+		t.Errorf("got  %q\nwant %q", got, full)
+	}
+}
+
+func TestFindContainerCgroupPath_PodLevelFallback(t *testing.T) {
+	const podUID = "11111111-2222-3333-4444-555555555555"
+	const containerID = "any-cid"
+
+	root := t.TempDir()
+	full := filepath.Join(root, "kubepods", "pod"+podUID)
+	mkdirAll(t, full)
+
+	got, err := FindContainerCgroupPath(root, podUID, containerID)
+	if err != nil {
+		t.Fatalf("FindContainerCgroupPath: %v", err)
+	}
+	if got != full {
+		t.Errorf("got  %q\nwant %q", got, full)
+	}
+}
+
+func TestFindContainerCgroupPath_TreeWalkFallback(t *testing.T) {
+	// None of the patterns match — walk the tree and find any dir whose name
+	// contains the container ID. Models k3d / minikube layouts.
+	const podUID = "99999999-9999-9999-9999-999999999999"
+	const containerID = "uniquecontainerid42"
+
+	root := t.TempDir()
+	odd := filepath.Join(root, "weird", "layout", "containerd-"+containerID+"-foo")
+	mkdirAll(t, odd)
+
+	got, err := FindContainerCgroupPath(root, podUID, containerID)
+	if err != nil {
+		t.Fatalf("FindContainerCgroupPath: %v", err)
+	}
+	if got != odd {
+		t.Errorf("got  %q\nwant %q", got, odd)
+	}
+}
+
+func TestFindContainerCgroupPath_NotFound(t *testing.T) {
+	root := t.TempDir()
+	// Empty root: no patterns match, walk finds nothing.
+	got, err := FindContainerCgroupPath(root, "deadbeef", "missing-cid")
+	if err == nil {
+		t.Fatalf("expected error, got path %q", got)
+	}
+	if !strings.Contains(err.Error(), "missing-cid") {
+		t.Errorf("error should mention container id, got: %v", err)
+	}
+}
+
+func TestReadCgroupProcs(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    []int
+	}{
+		{"empty", "", nil},
+		{"single pid", "12345\n", []int{12345}},
+		{"multiple pids", "1\n2\n3\n", []int{1, 2, 3}},
+		// Real cgroup.procs files have a trailing newline; the function trims
+		// whitespace before splitting.
+		{"trailing whitespace", "  100\n200  \n", []int{100, 200}},
+		// Blank lines and garbage entries are dropped.
+		{"blank line tolerated", "10\n\n20\n", []int{10, 20}},
+		{"garbage skipped", "100\nnot-a-pid\n200\n", []int{100, 200}},
+		{"only garbage", "abc\n.\n", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cgPath := t.TempDir()
+			if err := os.WriteFile(filepath.Join(cgPath, "cgroup.procs"), []byte(tc.content), 0o644); err != nil {
+				t.Fatalf("write file: %v", err)
+			}
+			got, err := ReadCgroupProcs(cgPath)
+			if err != nil {
+				t.Fatalf("ReadCgroupProcs: %v", err)
+			}
+			sort.Ints(got)
+			sort.Ints(tc.want)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadCgroupProcs_MissingFile(t *testing.T) {
+	root := t.TempDir()
+	// Don't create cgroup.procs.
+	_, err := ReadCgroupProcs(root)
+	if err == nil {
+		t.Fatal("expected error reading non-existent cgroup.procs")
+	}
+	if !strings.Contains(err.Error(), "cgroup.procs") {
+		t.Errorf("error should mention the file, got: %v", err)
+	}
+}
+
+func TestFindPodCgroupPath(t *testing.T) {
+	const podUID = "abcd1234-5678-9abc-def0-fedcba987654"
+	podUnderscored := strings.ReplaceAll(podUID, "-", "_")
+
+	for _, c := range []struct {
+		name string
+		rel  string
+	}{
+		{"systemd burstable", filepath.Join("kubepods.slice", "kubepods-burstable.slice", "kubepods-burstable-pod"+podUnderscored+".slice")},
+		{"systemd besteffort", filepath.Join("kubepods.slice", "kubepods-besteffort.slice", "kubepods-besteffort-pod"+podUnderscored+".slice")},
+		{"systemd guaranteed", filepath.Join("kubepods.slice", "kubepods-pod"+podUnderscored+".slice")},
+		{"cgroupfs burstable", filepath.Join("kubepods", "burstable", "pod"+podUID)},
+		{"cgroupfs guaranteed", filepath.Join("kubepods", "pod"+podUID)},
+		{"nested (tree walk)", filepath.Join("docker", "abc", "kubepods", "besteffort", "pod"+podUID)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			want := filepath.Join(root, c.rel)
+			// Another pod and the pod's own containers must not match.
+			mkdirAll(t, filepath.Join(want, "cri-containerd-0123.scope"),
+				filepath.Join(root, "kubepods", "besteffort", "pod00000000-0000-0000-0000-000000000000"))
+			got, err := FindPodCgroupPath(root, podUID)
+			if err != nil {
+				t.Fatalf("FindPodCgroupPath: %v", err)
+			}
+			if got != want {
+				t.Errorf("got  %q\nwant %q", got, want)
+			}
+		})
+	}
+
+	if got, err := FindPodCgroupPath(t.TempDir(), podUID); err == nil {
+		t.Errorf("found %q for a pod with no cgroup", got)
+	}
+}
+
+func TestReadCgroupTreeProcs(t *testing.T) {
+	pod := t.TempDir()
+	sandbox := filepath.Join(pod, "cri-containerd-sandbox.scope")
+	app := filepath.Join(pod, "cri-containerd-app.scope")
+	empty := filepath.Join(pod, "cri-containerd-exited.scope")
+	mkdirAll(t, sandbox, app, empty)
+	for path, procs := range map[string]string{
+		filepath.Join(pod, "cgroup.procs"):     "", // no internal processes
+		filepath.Join(sandbox, "cgroup.procs"): "100\n",
+		filepath.Join(app, "cgroup.procs"):     "200\n201\n",
+	} {
+		if err := os.WriteFile(path, []byte(procs), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := ReadCgroupTreeProcs(pod)
+	if err != nil {
+		t.Fatalf("ReadCgroupTreeProcs: %v", err)
+	}
+	sort.Ints(got)
+	if want := []int{100, 200, 201}; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+
+	if _, err := ReadCgroupTreeProcs(filepath.Join(pod, "gone")); err == nil {
+		t.Error("expected an error for a missing cgroup")
+	}
+}

@@ -1,0 +1,49 @@
+name: Publish Helm Chart
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  publish:
+    name: Publish Helm Chart to R2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set chart version
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          VERSION="0.0.1-nightly-${SHORT_SHA}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
+          sed -i "s/^version:.*/version: ${VERSION}/" charts/ghostkey/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"${VERSION}\"/" charts/ghostkey/Chart.yaml
+
+      - name: Install Helm
+        uses: azure/setup-helm@v5
+
+      - name: Package chart
+        run: helm package charts/ghostkey -d .helm-pkg
+
+      - name: Download existing charts from R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          AWS_REGION: auto
+        run: |
+          aws s3 sync s3://ghostkey-chart/ .helm-pkg/ --exclude "index.yaml"
+
+      - name: Build repo index
+        run: |
+          helm repo index .helm-pkg --url "${{ vars.HELM_REPO_URL }}"
+
+      - name: Upload to R2
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_ENDPOINT_URL: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          AWS_REGION: auto
+        run: |
+          aws s3 sync .helm-pkg/ s3://ghostkey-chart/

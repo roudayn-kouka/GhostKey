@@ -1,0 +1,12 @@
+GhostKey
+Copyright (C) 2026 Roudayna Kouka
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License version 3, as
+published by the Free Software Foundation. See LICENSE.
+
+GhostKey is a modified version of Kloak, Copyright (C) Spinning Factory,
+also licensed under the GNU AGPL v3. As required by section 5 of that
+license: this version was modified by Roudayna Kouka, starting 2026-10-25
+(project renamed, documentation and architecture animation rewritten,
+portable protocol constants, packaging metadata).
