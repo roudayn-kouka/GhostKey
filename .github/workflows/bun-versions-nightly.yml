@@ -21,13 +21,11 @@ name: Bun Versions Nightly
 # Python ELF parser. QEMU is not needed for cross-arch discovery either —
 # only nm and Python3 run on the host; the Bun binary is inspected as data.
 #
-# Runs daily at 07:45 UTC. Manual triggers via workflow_dispatch supported.
+# Manual trigger only (workflow_dispatch); the daily schedule is disabled.
 # fail-fast: false everywhere so one matrix cell does not mask the others.
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "45 7 * * *"
 
 concurrency:
   group: bun-versions-nightly
@@ -173,7 +171,8 @@ jobs:
 
       - name: Build ghostkey + demo images and import to k3s
         run: |
-          CACHE=${{ env.CACHE_REPO }}
+          # Docker refs must be lowercase; github.repository keeps the repo casing.
+          CACHE=$(echo "${{ env.CACHE_REPO }}" | tr '[:upper:]' '[:lower:]')
 
           docker buildx build --load \
             --cache-from type=registry,ref=${CACHE}:ghostkey \
@@ -267,10 +266,13 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    env:
+      # Secrets cannot be read in `if:`; expose whether the PAT is configured.
+      HAS_AUTOMATION_PAT: ${{ secrets.AUTOMATION_PAT != '' }}
     steps:
       - uses: actions/checkout@v7
         with:
-          token: ${{ secrets.AUTOMATION_PAT }}
+          token: ${{ secrets.AUTOMATION_PAT || github.token }}
 
       - name: Install nm, Python3 and jq
         run: sudo apt-get update && sudo apt-get install -y binutils python3 jq
@@ -327,8 +329,12 @@ jobs:
         run: |
           tools/bun-offsets/apply-new-versions.sh "${{ steps.find.outputs.new }}"
 
+      - name: Warn when AUTOMATION_PAT is missing
+        if: steps.find.outputs.new != '' && env.HAS_AUTOMATION_PAT != 'true'
+        run: echo "::warning::New versions found (${{ steps.find.outputs.new }}) but AUTOMATION_PAT is not set; skipping PR creation."
+
       - name: Open PR
-        if: steps.find.outputs.new != ''
+        if: steps.find.outputs.new != '' && env.HAS_AUTOMATION_PAT == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.AUTOMATION_PAT }}

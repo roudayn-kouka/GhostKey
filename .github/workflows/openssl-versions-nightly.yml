@@ -18,14 +18,12 @@ name: OpenSSL Versions Nightly
 #   3. watcher   — query GitHub releases for newly-released OpenSSL minor versions,
 #                  run discovery + table updates for them, open a Dependabot-style PR.
 #
-# Runs daily at 07:00 UTC. Manual triggers via workflow_dispatch are also
-# supported. fail-fast: false everywhere — one matrix cell flaking should not
+# Manual trigger only (workflow_dispatch); the daily schedule is disabled.
+# fail-fast: false everywhere — one matrix cell flaking should not
 # mask the others' results.
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 7 * * *"
 
 concurrency:
   group: openssl-versions-nightly
@@ -230,7 +228,8 @@ jobs:
 
       - name: Build ghostkey + demo-python-raw-tls (OpenSSL ${{ matrix.openssl }}) and import to k3s
         run: |
-          CACHE=${{ env.CACHE_REPO }}
+          # Docker refs must be lowercase; github.repository keeps the repo casing.
+          CACHE=$(echo "${{ env.CACHE_REPO }}" | tr '[:upper:]' '[:lower:]')
 
           docker buildx build --load \
             --cache-from type=registry,ref=${CACHE}:ghostkey \
@@ -327,6 +326,9 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+    env:
+      # Secrets cannot be read in `if:`; expose whether the PAT is configured.
+      HAS_AUTOMATION_PAT: ${{ secrets.AUTOMATION_PAT != '' }}
     steps:
       # The PR includes an edit to .github/workflows/openssl-offsets.yml, and
       # GitHub refuses to let the default GITHUB_TOKEN push changes to workflow
@@ -336,7 +338,7 @@ jobs:
       # secret. See the "Open PR" step below.
       - uses: actions/checkout@v7
         with:
-          token: ${{ secrets.AUTOMATION_PAT }}
+          token: ${{ secrets.AUTOMATION_PAT || github.token }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -412,8 +414,12 @@ jobs:
         run: |
           tools/openssl-offsets/apply-new-versions.sh "${{ steps.find.outputs.new }}"
 
+      - name: Warn when AUTOMATION_PAT is missing
+        if: steps.find.outputs.new != '' && env.HAS_AUTOMATION_PAT != 'true'
+        run: echo "::warning::New versions found (${{ steps.find.outputs.new }}) but AUTOMATION_PAT is not set; skipping PR creation."
+
       - name: Open PR
-        if: steps.find.outputs.new != ''
+        if: steps.find.outputs.new != '' && env.HAS_AUTOMATION_PAT == 'true'
         uses: peter-evans/create-pull-request@v8
         with:
           # PAT/App token with `repo` + `workflow` scopes. Required because the

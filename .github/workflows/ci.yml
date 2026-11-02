@@ -502,7 +502,8 @@ jobs:
           # build itself succeeds regardless; ignore-error lets buildx log the
           # 403 and continue. Same-repo PRs and pushes still warm the cache
           # normally because their tokens carry the write scope.
-          CACHE=${{ env.CACHE_REPO }}
+          # Docker refs must be lowercase; github.repository keeps the repo casing.
+          CACHE=$(echo "${{ env.CACHE_REPO }}" | tr '[:upper:]' '[:lower:]')
 
           # BPF_DEBUG=1 compiles the bpf_printk markers in pkg/ebpf/bpf/tls_uprobe.c.
           # Their output streams to /sys/kernel/tracing/trace_pipe and is captured
