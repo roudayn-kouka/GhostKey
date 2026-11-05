@@ -151,7 +151,7 @@ A secret restricted with `ghostkey.io/hosts` is only rewritten when every check 
 3. **SNI:** the connection's ClientHello named that exact host, so a CDN IP shared by another tenant is not enough. Connections without SNI or with ECH are refused.
 4. **Binding:** the writing pod references the secret in its spec.
 
-Refusals are logged by the controller. `controller.ebpf.sniCheck: audit` and `controller.ebpf.secretBinding: audit` let them through while logging each one, which helps you find workloads before you enforce.
+Refusals are logged by the controller and published as Warning Events on the pod (reasons `SecretBindingViolation` and `SNICheckViolation`, rate-limited like the log), so `kubectl get events --field-selector reason=SNICheckViolation -A` and the [dashboard](#dashboard) list them. `controller.ebpf.sniCheck: audit` and `controller.ebpf.secretBinding: audit` let them through while logging each one, which helps you find workloads before you enforce.
 
 ## Quick start
 
@@ -185,6 +185,40 @@ kubectl logs -f -l app=demo-python -n ghostkey-demo -c demo-app
 ./examples/destroy-demo.sh
 ```
 
+## Dashboard
+
+A read-only web dashboard shows GhostKey's state in the cluster:
+
+| Page | Shows |
+|---|---|
+| **Overview** | Controller pods per node, webhook replicas and admission configurations, the data-plane modes (`secretBinding`, `sniCheck`, `hostResolution`, `tcAttachMode`, read from the DaemonSet args), and counts of protected secrets, tracked pods, missing shadows and violations. |
+| **Protected secrets** | Secrets labeled `ghostkey.io/enabled=true`, their `ghostkey.io/hosts` / `ghostkey.io/port` annotations, whether the shadow `<name>-ghostkey` exists, and the pods that reference them. |
+| **Pods** | Pods annotated `ghostkey.io/enabled=true`, their node and the secrets they may redeem. |
+| **Violations** | The `SecretBindingViolation` / `SNICheckViolation` Events. |
+| **Validate a Secret** | Paste a Secret manifest and get the same verdict as the `/validate-secrets` webhook, without creating anything. |
+
+It is disabled by default. Enable it and reach it through a port-forward:
+
+```bash
+helm upgrade --install ghostkey ./charts/ghostkey -n ghostkey-system --set dashboard.enabled=true
+kubectl port-forward -n ghostkey-system svc/ghostkey-dashboard 8090:8090
+# open http://localhost:8090
+```
+
+**It never returns a secret value.** Real Secrets are only read as metadata, so their data never reaches the dashboard. Of a shadow it keeps only the key names, the placeholder length and the `kl::` prefix. The YAML pasted into the validator is neither logged nor stored nor echoed back. A unit test calls every API route and fails if a response contains a value. Other safeguards:
+
+- The Service is `ClusterIP` only and the chart ships no Ingress: the dashboard has no authentication of its own, so access goes through the Kubernetes RBAC on `services/portforward`.
+- It only answers `localhost`, `127.0.0.1`, `::1` and its Service names as `Host` (DNS-rebinding protection; add more with `dashboard.allowedHosts`). It also sets a strict Content-Security-Policy, and the frontend never renders API data as HTML.
+- It runs as non-root with a read-only root filesystem. Its ClusterRole is read-only (`get`/`list` on secrets, pods and events, `get` on the webhook configurations, the controller DaemonSet and the webhook Deployment). RBAC cannot grant a Secret's metadata without its data, so a compromised dashboard pod could read Secrets: keep it disabled where that is not acceptable.
+
+To try the UI without a cluster, `ghostkey dashboard --demo-data` serves fictitious data, marked by a banner:
+
+```bash
+make build && ./bin/ghostkey dashboard --demo-data   # http://localhost:8090
+```
+
+The frontend is plain HTML/CSS/JS embedded in the binary with `go:embed`: no Node build, no CDN, so it works air-gapped.
+
 ## Development
 
 ```bash
@@ -197,8 +231,9 @@ make docker-build       # container image
 ```
 
 ```text
-cmd/ghostkey/      CLI: controller, webhook, secrets validate, version
-pkg/controller/    Pod and Secret reconcilers, NRI plugin
+cmd/ghostkey/      CLI: controller, webhook, dashboard, secrets validate, version
+pkg/controller/    Pod and Secret reconcilers, NRI plugin, violation Events
+pkg/dashboard/     read-only web dashboard: JSON API and embedded frontend
 pkg/ebpf/          probe attach, BPF map sync, tc attach, per-library offsets
 pkg/ebpf/bpf/      eBPF C source and unit-tested pure helpers
 pkg/webhook/       mutating and validating admission webhooks

@@ -1,0 +1,24 @@
+{{- if .Values.dashboard.enabled }}
+# ClusterIP only: reach the dashboard with
+#   kubectl port-forward -n {{ .Release.Namespace }} svc/ghostkey-dashboard 8090:8090
+# so access is gated by the Kubernetes RBAC on services/portforward. The chart
+# ships no Ingress on purpose: the dashboard has no authentication of its own.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ghostkey-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8090
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "ghostkey.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+{{- end }}

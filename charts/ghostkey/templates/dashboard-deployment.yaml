@@ -1,0 +1,70 @@
+{{- if .Values.dashboard.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ghostkey-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "ghostkey.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: dashboard
+  template:
+    metadata:
+      labels:
+        {{- include "ghostkey.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: dashboard
+    spec:
+      serviceAccountName: ghostkey-dashboard
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: dashboard
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/ghostkey", "dashboard"]
+          args:
+            - --bind-address=:8090
+            - --health-probe-bind-address=:8091
+            - --controller-namespace={{ .Release.Namespace }}
+            {{- with .Values.dashboard.allowedHosts }}
+            - --allowed-hosts={{ join "," . }}
+            {{- end }}
+          env:
+            - name: GHOSTKEY_LOG_LEVEL
+              value: {{ .Values.log.level | quote }}
+            - name: GHOSTKEY_LOG_DEV
+              value: {{ .Values.log.dev | quote }}
+          ports:
+            - name: http
+              containerPort: 8090
+            - name: health
+              containerPort: 8091
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.dashboard.resources | nindent 12 }}
+{{- end }}

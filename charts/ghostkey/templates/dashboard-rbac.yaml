@@ -1,0 +1,81 @@
+{{- if .Values.dashboard.enabled }}
+# Read-only access for the dashboard. Note that RBAC cannot grant a Secret's
+# metadata without its data: "list secrets" would let a compromised dashboard
+# pod read every value, although the dashboard itself only lists real Secrets
+# as metadata. Keep the dashboard disabled where that is not acceptable.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ghostkey-dashboard
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+rules:
+  # Protected secrets (metadata only) and their shadows (key names and
+  # lengths only), tracked pods and controller pods, violation Events
+  - apiGroups: [""]
+    resources: ["secrets", "pods", "events"]
+    verbs: ["get", "list"]
+  # Webhook status
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["mutatingwebhookconfigurations"]
+    resourceNames: ["ghostkey-mutating-webhook"]
+    verbs: ["get"]
+  - apiGroups: ["admissionregistration.k8s.io"]
+    resources: ["validatingwebhookconfigurations"]
+    resourceNames: ["ghostkey-validating-webhook"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ghostkey-dashboard
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ghostkey-dashboard
+subjects:
+  - kind: ServiceAccount
+    name: ghostkey-dashboard
+    namespace: {{ .Release.Namespace }}
+---
+# The controller DaemonSet (its args hold the data-plane modes) and the
+# webhook Deployment, in the release namespace only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ghostkey-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+rules:
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    resourceNames: ["ghostkey-controller"]
+    verbs: ["get"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: ["ghostkey-webhook"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ghostkey-dashboard
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "ghostkey.labels" . | nindent 4 }}
+    app.kubernetes.io/component: dashboard
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ghostkey-dashboard
+subjects:
+  - kind: ServiceAccount
+    name: ghostkey-dashboard
+    namespace: {{ .Release.Namespace }}
+{{- end }}

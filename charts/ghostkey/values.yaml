@@ -116,6 +116,29 @@ webhook:
       cpu: 500m
       memory: 128Mi
 
+# Read-only web dashboard (`ghostkey dashboard`): controller pods per node,
+# webhook status, data-plane modes, protected secrets, tracked pods and
+# binding / SNI violations. It never returns a secret value. It is exposed
+# by a ClusterIP Service only, with no authentication of its own:
+#   kubectl port-forward -n ghostkey-system svc/ghostkey-dashboard 8090:8090
+# then open http://localhost:8090. Its ClusterRole lists Secrets cluster-wide
+# (the dashboard reads real Secrets as metadata only, but RBAC cannot enforce
+# that), which is why it is disabled by default.
+dashboard:
+  enabled: false
+  # Extra Host header values the dashboard answers (DNS-rebinding
+  # protection), besides localhost, 127.0.0.1, ::1 and the ghostkey-dashboard
+  # Service names. Add the name you reach it by if you put a proxy in front
+  # of it.
+  allowedHosts: []
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
 certificates:
   mode: auto  # auto | certManager | provided
   provided:

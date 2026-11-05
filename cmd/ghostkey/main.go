@@ -17,6 +17,7 @@ API key management without exposing secrets in plain text.`,
 func init() {
 	rootCmd.AddCommand(controllerCmd)
 	rootCmd.AddCommand(webhookCmd)
+	rootCmd.AddCommand(dashboardCmd)
 	rootCmd.AddCommand(versionCmd)
 
 	// Wire `ghostkey --version` to the same multi-line output as `ghostkey version`
