@@ -151,6 +151,9 @@ type TLSUprobeManager struct {
 	// bindingLogged rate-limits violation logs per (cgroup, placeholder,
 	// reason).
 	bindingLogged map[bindingLogKey]time.Time
+	// violations, if set, also receives every logged violation
+	// (SetViolationRecorder).
+	violations ViolationRecorder
 
 	// virtualIPs allocates the watched hosts' fake IPs in virtual-ip host
 	// resolution mode; nil otherwise.
@@ -183,13 +186,6 @@ type uprobeKey struct {
 	dev, ino uint64
 	symbol   string
 	offset   uint64
-}
-
-// bindingLogKey identifies a logged binding or SNI violation.
-type bindingLogKey struct {
-	acl       secretACLKey
-	reason    uint8
-	sniStatus uint8
 }
 
 // tcAttachEntry holds an open fd to a network namespace to prevent inode reuse.
@@ -2256,33 +2252,29 @@ func (m *TLSUprobeManager) UnbindPod(podUID string) {
 	}
 }
 
-// bindingLogInterval bounds how often the same (cgroup, placeholder)
-// violation is logged.
-const bindingLogInterval = time.Minute
+// SetViolationRecorder makes every logged binding or SNI violation also be
+// handed to rec (with the log's rate limiting), e.g. to publish it as a
+// Kubernetes Event. nil disables it.
+func (m *TLSUprobeManager) SetViolationRecorder(rec ViolationRecorder) {
+	m.bindMu.Lock()
+	m.violations = rec
+	m.bindMu.Unlock()
+}
 
 // logBindingViolation reports a placeholder redeemed outside its binding,
 // or on a connection whose SNI is not the secret's host.
 func (m *TLSUprobeManager) logBindingViolation(ev *secretBindingEvent) {
-	key := bindingLogKey{
-		acl:       secretACLKey{CgroupID: ev.CgroupID, Key: ev.Key},
-		reason:    ev.Reason,
-		sniStatus: ev.SNIStatus,
-	}
-	now := time.Now()
-
 	m.bindMu.Lock()
-	if last, ok := m.bindingLogged[key]; ok && now.Sub(last) < bindingLogInterval {
+	if !allowViolationLog(m.bindingLogged, newBindingLogKey(ev), time.Now()) {
 		m.bindMu.Unlock()
 		return
 	}
-	m.bindingLogged[key] = now
-	for k, at := range m.bindingLogged {
-		if now.Sub(at) >= bindingLogInterval {
-			delete(m.bindingLogged, k)
-		}
-	}
 	pod, secret := describeBindingEvent(ev, m.bindings, m.lastSnapshot)
+	violation := newViolation(ev, m.bindings, m.lastSnapshot)
+	rec := m.violations
 	m.bindMu.Unlock()
+
+	recordViolation(rec, &violation)
 
 	if ev.Reason == secretEventSNI {
 		m.logSNIViolation(ev, pod, secret)

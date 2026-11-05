@@ -21,6 +21,7 @@ import (
 
 	"github.com/roudayna/ghostkey/pkg/controller"
 	"github.com/roudayna/ghostkey/pkg/ebpf"
+	gkevents "github.com/roudayna/ghostkey/pkg/events"
 	"github.com/roudayna/ghostkey/pkg/logging"
 	k8ssecrets "github.com/roudayna/ghostkey/pkg/secrets/k8s"
 )
@@ -174,6 +175,7 @@ func runController(cmd *cobra.Command, args []string) {
 		uprobeMgr.SetTCAttachMode(tcMode)
 		uprobeMgr.SetSecretBindingMode(bindingMode)
 		uprobeMgr.SetSNICheckMode(sniMode)
+		uprobeMgr.SetViolationRecorder(controller.NewViolationEventRecorder(mgr.GetEventRecorder(gkevents.ReportingController)))
 		setupLog.Infow("eBPF TLS uprobes enabled")
 	} else {
 		setupLog.Infow("eBPF disabled")

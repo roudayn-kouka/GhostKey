@@ -57,6 +57,7 @@ func (m *TLSUprobeManager) SetTCAttachMode(TCAttachMode)             {}
 func (m *TLSUprobeManager) SetSecretBindingMode(SecretBindingMode)   {}
 func (m *TLSUprobeManager) SetSNICheckMode(SNICheckMode)             {}
 func (m *TLSUprobeManager) UnbindPod(string)                         {}
+func (m *TLSUprobeManager) SetViolationRecorder(ViolationRecorder)   {}
 func (m *TLSUprobeManager) VirtualIPEnabled() bool                   { return false }
 func (m *TLSUprobeManager) DetachPodDNSRewrite(string)               {}
 

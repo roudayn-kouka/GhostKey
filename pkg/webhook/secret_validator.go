@@ -68,37 +68,56 @@ func (v *SecretValidator) Handle(ctx context.Context, req admission.Request) adm
 		return admission.Errored(http.StatusBadRequest, err)
 	}
 
+	verdict := ValidateSecret(secret)
+	if !verdict.Allowed {
+		v.log.Warnw("rejecting secret: "+verdict.Cause,
+			"namespace", secret.Namespace, "name", secret.Name, "error", verdict.Message)
+		return admission.Denied(verdict.Message)
+	}
+	return admission.Allowed(verdict.Message)
+}
+
+// SecretVerdict is the outcome of ValidateSecret.
+type SecretVerdict struct {
+	// Allowed is false when the webhook would reject the Secret.
+	Allowed bool
+	// Message is the admission response message: "not ghostkey-enabled",
+	// "valid", or the "ghostkey: …" rejection. It names keys, lengths and
+	// annotations, never a secret value.
+	Message string
+	// Cause is a short category of a rejection, for logs.
+	Cause string
+}
+
+// ValidateSecret is the verdict of the /validate-secrets webhook on secret,
+// also used offline (e.g. by the dashboard). Secrets without the
+// ghostkey.io/enabled=true label are allowed unchanged.
+func ValidateSecret(secret *corev1.Secret) SecretVerdict {
 	if secret.Labels[LabelEnabled] != "true" {
-		return admission.Allowed("not ghostkey-enabled")
+		return SecretVerdict{Allowed: true, Message: "not ghostkey-enabled"}
 	}
 
 	if misplaced := k8ssecrets.MisplacedFilterLabels(secret.Labels); len(misplaced) > 0 {
-		v.log.Warnw("rejecting secret: destination filter set as a label",
-			"namespace", secret.Namespace, "name", secret.Name, "labels", misplaced)
-		return admission.Denied(fmt.Sprintf(
+		return SecretVerdict{Cause: "destination filter set as a label", Message: fmt.Sprintf(
 			"ghostkey: %s must be set as an annotation, not a label (as a label it is ignored and the secret could be sent to any host)",
-			strings.Join(misplaced, ", ")))
+			strings.Join(misplaced, ", "))}
 	}
 
 	if err := validateHostsLabel(secret.Annotations[AnnotationHosts]); err != nil {
-		v.log.Warnw("rejecting secret: invalid hosts annotation",
-			"namespace", secret.Namespace, "name", secret.Name, "error", err)
-		return admission.Denied(fmt.Sprintf("ghostkey: invalid %s annotation: %v", AnnotationHosts, err))
+		return SecretVerdict{Cause: "invalid hosts annotation",
+			Message: fmt.Sprintf("ghostkey: invalid %s annotation: %v", AnnotationHosts, err)}
 	}
 
 	if err := validatePortLabel(secret.Annotations[AnnotationPort]); err != nil {
-		v.log.Warnw("rejecting secret: invalid port annotation",
-			"namespace", secret.Namespace, "name", secret.Name, "error", err)
-		return admission.Denied(fmt.Sprintf("ghostkey: invalid %s annotation: %v", AnnotationPort, err))
+		return SecretVerdict{Cause: "invalid port annotation",
+			Message: fmt.Sprintf("ghostkey: invalid %s annotation: %v", AnnotationPort, err)}
 	}
 
 	if err := validateSecretData(secret.Data, secret.StringData); err != nil {
-		v.log.Warnw("rejecting secret: invalid data",
-			"namespace", secret.Namespace, "name", secret.Name, "error", err)
-		return admission.Denied(fmt.Sprintf("ghostkey: %v", err))
+		return SecretVerdict{Cause: "invalid data", Message: fmt.Sprintf("ghostkey: %v", err)}
 	}
 
-	return admission.Allowed("valid")
+	return SecretVerdict{Allowed: true, Message: "valid"}
 }
 
 // validateSecretData enforces the length constraints that the BPF pipeline

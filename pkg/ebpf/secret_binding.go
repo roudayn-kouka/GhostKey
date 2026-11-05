@@ -211,12 +211,8 @@ func vipPodHosts(snapshot []secrets.Secret, bindings map[string]podBinding, anyH
 // a cgroup outside every binding belongs to a pod ghostkey doesn't track.
 func describeBindingEvent(ev *secretBindingEvent, bindings map[string]podBinding, snapshot []secrets.Secret) (pod, secret string) {
 	pod = fmt.Sprintf("untracked cgroup %d", ev.CgroupID)
-	for _, b := range bindings {
-		for _, cg := range b.cgroupIDs {
-			if cg == ev.CgroupID {
-				pod = b.pod
-			}
-		}
+	if _, b, ok := bindingOfCgroup(ev.CgroupID, bindings); ok {
+		pod = b.pod
 	}
 	secret = "unknown"
 	for i := range snapshot {
